@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "company": "Halyard",
+    "guide_title": "Brand Guidelines",
+    "subtitle": "Security that keeps its head above water",
+    "version": "1.0",
+    "date": "October 2026",
+    "purpose": "This guide shows how to present the Halyard brand consistently. It is for employees, agencies, partners, and AI design tools. The rules are fixed; creativity inside them is encouraged.",
+    "audience": "Marketing, sales, product, agencies, and partners producing anything with our name on it."
+  },
+  "foundation": {
+    "mission": "Give every security team the calm, clear signal they need to act.",
+    "vision": "A world where security teams spend their time deciding, not searching.",
+    "tagline": "Signal over noise.",
+    "positioning": "Halyard is the detection platform that turns noisy telemetry into a short, ranked list of what matters, so lean security teams act first and explain later.",
+    "boilerplate": "Halyard helps security teams cut through alert noise. The Halyard platform correlates signals across cloud, identity, and endpoint to surface the handful of threats that matter, ranked and explained. Founded in 2021 and headquartered in Denver, Colorado, Halyard protects more than 400 organizations. Learn more at halyard.example.",
+    "pillars": [
+      {"name": "Clarity", "description": "We say the useful thing first.", "points": ["Ranked, explained findings", "Plain language over jargon", "No dashboards for their own sake"]},
+      {"name": "Calm", "description": "Security without the siren.", "points": ["No fear-based selling", "Confident, steady tone", "Evidence over adjectives"]},
+      {"name": "Craft", "description": "Built by practitioners.", "points": ["Designed with SOC analysts", "Opinionated defaults", "Fast to deploy"]}
+    ],
+    "direction": "Over the next two years we are moving from a detection tool to the system of record for security decisions. The brand should feel more like a trusted instrument than a startup.",
+    "voice": {
+      "summary": "We sound like the most senior analyst on the team: direct, unhurried, and specific.",
+      "traits": [
+        {"we_are": "Direct", "we_are_not": "Blunt or cold"},
+        {"we_are": "Confident", "we_are_not": "Arrogant or absolute"},
+        {"we_are": "Plainspoken", "we_are_not": "Jargon-heavy"},
+        {"we_are": "Calm", "we_are_not": "Alarmist"}
+      ],
+      "tone_notes": ["Lead with the outcome, then the evidence", "Cite a source for every number", "Never use breach headlines to sell"]
+    }
+  },
+  "logos": {
+    "description": "The Halyard logo pairs the Signal mark, a wave rising inside a circle, with our wordmark. The two always appear together in the approved relationship.",
+    "anatomy": ["Signal mark: the circle and wave", "Wordmark: custom-drawn lowercase lettering", "The mark and wordmark are one lockup and are never redrawn"],
+    "preferred": "light",
+    "variants": [
+      {"id": "light", "name": "Full color", "file": "logos/halyard-light.svg", "type": "full", "use_on": "light", "usage": "Default. White and light gray backgrounds."},
+      {"id": "dark", "name": "Knockout", "file": "logos/halyard-dark.svg", "type": "full", "use_on": "dark", "usage": "Ink and other dark backgrounds."},
+      {"id": "white", "name": "All white", "file": "logos/halyard-white.svg", "type": "mono", "use_on": "color", "background": "Halyard Blue", "usage": "On Halyard Blue only."},
+      {"id": "black", "name": "All ink", "file": "logos/halyard-black.svg", "type": "mono", "use_on": "light", "usage": "One-color print and engraving."},
+      {"id": "mark", "name": "Signal mark", "file": "logos/halyard-mark.svg", "type": "mark", "use_on": "light", "usage": "Favicons and avatars where the full logo will not fit."}
+    ],
+    "clear_space": {"ratio": 0.5, "unit_description": "half the height of the Signal mark", "rule": "Keep a clear zone of x on every side of the logo, where x is half the height of the Signal mark. No text, imagery, or edges inside it.", "small_size_rule": "At favicon sizes the mark may fill up to 90% of the canvas."},
+    "min_size": {"print": "1 in / 25 mm wide", "digital": "120 px wide", "mark_only": "16 px"},
+    "where_not": ["On competitor-hosted or competitor-sponsored materials", "On merchandise without marketing approval", "Next to breach news imagery or hacker stock photos", "In a partner's product UI without a signed agreement"],
+    "donts_custom": ["Do not use the Signal mark as a bullet point or decorative icon", "Do not animate the wave without the approved motion file"]
+  },
+  "cobranding": {
+    "intro": "When Halyard appears with a partner, both brands should look like equals.",
+    "separator": "line",
+    "min_gap": "0.5 in / 48 px between logos",
+    "rules": [{"title": "Order", "text": "Halyard first in Halyard-led materials; partner first in theirs."}, {"title": "Balance", "text": "Match visual weight, not pixel width."}, {"title": "Alignment", "text": "Center-align on a shared axis."}, {"title": "Mode", "text": "Both logos in the same mode."}],
+    "donts": ["Do not convert the Halyard logo to grayscale to match a partner", "Do not give either logo visual dominance", "Do not create a combined lockup"]
+  },
+  "colors": {
+    "groups": [
+      {"name": "Primary", "usage": "Halyard Blue and Ink carry the brand. Use them for logo, headlines, and large color fields.", "swatches": [
+        {"name": "Halyard Blue", "hex": "#1F5EFF", "rgb": "31, 94, 255", "cmyk": "85, 63, 0, 0", "pms": "2728 C"},
+        {"name": "Ink", "hex": "#0E1525", "rgb": "14, 21, 37", "cmyk": "86, 75, 49, 72", "pms": "Black 6 C"},
+        {"name": "White", "hex": "#FFFFFF", "rgb": "255, 255, 255", "cmyk": "0, 0, 0, 0"}
+      ]},
+      {"name": "Accent", "usage": "Use sparingly for calls to action, highlights, and charts. Never as a background behind body text.", "swatches": [
+        {"name": "Signal Coral", "hex": "#FF6B4A", "rgb": "255, 107, 74", "pms": "2028 C", "role": "CTAs and highlights"},
+        {"name": "Tide", "hex": "#14B8A6", "rgb": "20, 184, 166", "pms": "3268 C", "role": "Success, charts"},
+        {"name": "Sky", "hex": "#9CC3FF", "rgb": "156, 195, 255", "pms": "2706 C", "role": "Links on dark"}
+      ]},
+      {"name": "Neutrals", "usage": "Structure: backgrounds, borders, dividers, tables, and body copy.", "swatches": [
+        {"name": "Mist", "hex": "#F4F6FA", "rgb": "244, 246, 250"},
+        {"name": "Fog", "hex": "#E3E8F0", "rgb": "227, 232, 240"},
+        {"name": "Slate 300", "hex": "#B6C0D0", "rgb": "182, 192, 208"},
+        {"name": "Slate 500", "hex": "#6B778C", "rgb": "107, 119, 140"},
+        {"name": "Slate 700", "hex": "#3A4458", "rgb": "58, 68, 88"},
+        {"name": "Deep", "hex": "#1A2335", "rgb": "26, 35, 53"}
+      ]}
+    ],
+    "modes": {
+      "light": {"background": "White", "surface": "Mist", "text": "Ink", "text_muted": "Slate 500", "border": "Fog", "accent": "Halyard Blue", "link": "Halyard Blue", "logo_variant": "light"},
+      "dark": {"background": "Ink", "surface": "Deep", "text": "White", "text_muted": "Slate 300", "border": "Slate 700", "accent": "Halyard Blue", "link": "Sky", "logo_variant": "dark"}
+    },
+    "ratio": [
+      {"color": "White", "percent": 55, "label": "White / Mist", "use": "Space and backgrounds"},
+      {"color": "Ink", "percent": 25, "label": "Ink", "use": "Type and dark sections"},
+      {"color": "Halyard Blue", "percent": 15, "label": "Halyard Blue", "use": "Brand moments"},
+      {"color": "Signal Coral", "percent": 5, "label": "Coral", "use": "Actions only"}
+    ],
+    "gradients": [{"name": "Depth", "stops": ["Halyard Blue", "Ink"], "angle": 135}],
+    "gradient_rules": "One gradient only, Halyard Blue to Ink, at 135 degrees. Use for hero backgrounds, never behind small text.",
+    "donts": ["Do not tint or shade brand colors outside the defined neutrals", "Do not set body text in Signal Coral", "Do not place Halyard Blue text on Ink"]
+  },
+  "typography": {
+    "families": [
+      {"name": "Inter Display", "role": "headline", "weights": ["Medium", "Semi Bold", "Bold"], "usage": "Headlines and display numbers.", "source": "Open source (SIL OFL), rsms.me/inter", "fallback": "Arial"},
+      {"name": "Inter", "role": "body", "weights": ["Regular", "Italic", "Medium", "Semi Bold"], "usage": "Body copy, UI, tables, and captions.", "source": "Open source (SIL OFL)", "fallback": "Arial"}
+    ],
+    "hierarchy": [
+      {"level": "Eyebrow", "family": "Inter", "weight": "Semi Bold", "size": "12px", "tracking": "8%", "case": "uppercase", "sample": "Product update"},
+      {"level": "H1", "family": "Inter Display", "weight": "Semi Bold", "size": "48px", "line_height": "1.1"},
+      {"level": "H2", "family": "Inter Display", "weight": "Semi Bold", "size": "32px", "line_height": "1.2"},
+      {"level": "H3", "family": "Inter Display", "weight": "Medium", "size": "24px", "line_height": "1.25"},
+      {"level": "Lead", "family": "Inter", "weight": "Regular", "size": "20px", "line_height": "1.5"},
+      {"level": "Body", "family": "Inter", "weight": "Regular", "size": "16px", "line_height": "1.6"},
+      {"level": "Caption", "family": "Inter", "weight": "Medium", "size": "12px", "line_height": "1.4"}
+    ],
+    "rules": ["Sentence case for all headlines", "Headlines in Ink, White, or Halyard Blue only", "Left-align body copy; never justify"],
+    "donts": ["Use more than two weights in one layout", "Set body copy below 14 px on screen"]
+  },
+  "imagery": {
+    "photography": {"summary": "Real practitioners at work, in natural light.", "principles": [{"title": "Real people", "text": "Candid, never posed."}, {"title": "Natural light", "text": "Daylight, soft shadows."}, {"title": "Calm focus", "text": "Concentration, not panic."}], "dont": ["Hooded hackers or green code rain", "Padlocks, shields, and stock 'cyber' clichés", "Staged handshakes"]}
+  },
+  "editorial": {
+    "base_style_guide": "the AP Stylebook",
+    "name_usage": ["Halyard, never HALYARD or Halyard Labs", "The Halyard platform on first reference, then Halyard", "Do not add 'Halyard' in front of feature names"],
+    "terms": [
+      {"use": "threat", "avoid": "attack (when the tactic is unknown)", "note": "Broader and more accurate"},
+      {"use": "AI", "avoid": "AI and machine learning", "note": "Redundant together"},
+      {"use": "cybersecurity", "avoid": "cyber security", "note": "One word"},
+      {"use": "sign in", "avoid": "login (as a verb)", "note": "Login is a noun"}
+    ],
+    "formatting": ["Always use the Oxford comma", "Never use & or + in place of 'and' in body copy", "Dates: October 28, 2026", "Phone: +1-303-555-0100"]
+  },
+  "governance": {
+    "asset_location": "brand.halyard.example (logos, fonts, templates)",
+    "contacts": [{"role": "Brand approvals", "name": "Brand team", "email": "brand@halyard.example"}],
+    "version_history": [{"version": "1.0", "date": "October 2026", "notes": "First edition"}]
+  }
+}

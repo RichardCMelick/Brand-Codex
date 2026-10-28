@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "company": "",
+    "guide_title": "Brand Guidelines",
+    "subtitle": "",
+    "version": "1.0",
+    "date": "",
+    "purpose": "",
+    "audience": ""
+  },
+  "foundation": {
+    "mission": "",
+    "vision": "",
+    "tagline": "",
+    "positioning": "",
+    "boilerplate": "",
+    "direction": "",
+    "direction_public": false,
+    "pillars": [],
+    "values": [],
+    "voice": {
+      "summary": "",
+      "traits": [],
+      "tone_notes": []
+    }
+  },
+  "audiences": [],
+  "logos": {
+    "description": "",
+    "anatomy": [],
+    "preferred": "",
+    "variants": [],
+    "backgrounds": [],
+    "clear_space": {},
+    "min_size": {},
+    "trademark": "",
+    "donts_auto": [
+      "stretch",
+      "rotate",
+      "recolor",
+      "effects",
+      "outline",
+      "busy",
+      "wrong_mode",
+      "crowd"
+    ],
+    "donts_custom": [],
+    "where_not": [],
+    "lockup_rules": []
+  },
+  "cobranding": {},
+  "colors": {
+    "groups": [],
+    "modes": {
+      "light": {},
+      "dark": {}
+    },
+    "ratio": [],
+    "gradients": [],
+    "donts": []
+  },
+  "typography": {
+    "families": [],
+    "hierarchy": [],
+    "rules": [],
+    "donts": []
+  },
+  "imagery": {},
+  "editorial": {},
+  "governance": {
+    "asset_location": "",
+    "contacts": [],
+    "version_history": []
+  }
+}
