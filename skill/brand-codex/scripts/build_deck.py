@@ -35,9 +35,11 @@ from brandlib import (load_brand, resolve, g, norm_hex, hex_to_rgb, parse_rgb,
 import misuse
 
 W, H = 13.333, 7.5
-LEFT_W = 4.35          # text panel width
-RX = 4.75              # right visual area x
-RW = W - RX - 0.45     # right visual area width
+LEFT_W = 4.35          # text column width
+RX = 4.85              # right visual area x (inside the inset panel)
+RW = W - RX - 0.85     # right visual area width
+PANEL_R = 0.18         # corner radius of the inset visual panel
+HAIR = 0.0104          # hairline thickness (0.75pt) in inches
 
 
 # ======================================================================
@@ -67,6 +69,9 @@ class Theme:
         self.accent = acc
         self.accent_ink = readable_on(acc)
         self.border = color_by_ref(brand, lm.get("border")) or self._mix(self.light_text, self.light_bg, 0.85)
+        # hairline for dividers: lighter than a border so lists read as rows, not boxes
+        self.hair = self._mix(self.light_text, self.light_bg, 0.82)
+        self.good, self.bad = "#2F7D5B", "#B5473A"
         fams = g(brand, "typography", "families", default=[]) or []
 
         def pick(roles):
@@ -115,6 +120,9 @@ def rect(slide, x, y, w, h, fill, line=None, shape=MSO_SHAPE.RECTANGLE, radius=N
     else:
         s.line.fill.background()
     s.shadow.inherit = False
+    st = s._element.find(qn("p:style"))   # theme style carries the default drop shadow
+    if st is not None:
+        s._element.remove(st)
     if radius is not None and shape == MSO_SHAPE.ROUNDED_RECTANGLE:
         s.adjustments[0] = radius
     if name:
@@ -122,6 +130,18 @@ def rect(slide, x, y, w, h, fill, line=None, shape=MSO_SHAPE.RECTANGLE, radius=N
     tf = s.text_frame
     tf.text = ""
     return s
+
+
+def rrect(slide, x, y, w, h, fill, line=None, r=0.14, name=None):
+    """Rounded rectangle with a corner radius given in inches."""
+    frac = min(0.5, r / max(0.01, min(w, h)))
+    return rect(slide, x, y, w, h, fill, line=line, shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+                radius=frac, name=name)
+
+
+def rule(slide, x, y, w, color, weight=HAIR):
+    """Hairline divider."""
+    return rect(slide, x, y, w, weight, color)
 
 
 def text(slide, x, y, w, h, content, size=12, color="#000000", font="Arial",
@@ -176,8 +196,22 @@ def _bullet(p, color):
     bu.set("char", "•")
 
 
-def picture(slide, pil_or_path, x, y, w, h, align="center"):
-    """Place an image fitted inside the box (keeps aspect)."""
+def _round_corners(im, radius_px):
+    im = im.convert("RGBA")
+    ss = 3
+    mask = Image.new("L", (im.width * ss, im.height * ss), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, im.width * ss - 1, im.height * ss - 1], radius=radius_px * ss, fill=255)
+    mask = mask.resize(im.size, Image.LANCZOS)
+    a = im.getchannel("A")
+    from PIL import ImageChops
+    im.putalpha(ImageChops.multiply(a, mask))
+    return im
+
+
+def picture(slide, pil_or_path, x, y, w, h, align="center", radius=None):
+    """Place an image fitted inside the box (keeps aspect). radius (inches)
+    rounds the corners."""
     if isinstance(pil_or_path, Image.Image):
         im = pil_or_path
     else:
@@ -191,6 +225,8 @@ def picture(slide, pil_or_path, x, y, w, h, align="center"):
         px, py = x, y + (h - ph) / 2
     else:
         px, py = x + w - pw, y + (h - ph) / 2
+    if radius:
+        im = _round_corners(im, max(1, int(radius / pw * im.width)))
     buf = io.BytesIO()
     im.save(buf, format="PNG")
     buf.seek(0)
@@ -218,6 +254,8 @@ class Deck:
         self.section = ""
         self.section_no = 0
         self.content_slides = []
+        self.divider_slides = []
+        self.toc_slots = []
         self.toc = []
         self.company = g(brand, "meta", "company", default="Company")
         self._logo_cache = {}
@@ -259,85 +297,110 @@ class Deck:
         set_bg(s, bg or self.t.light_bg)
         return s
 
-    def chip(self, s, x, y, label, fill=None, ink=None):
-        fill = fill or self.t.accent
-        ink = ink or readable_on(fill)
-        w = 0.32 + 0.072 * len(label)
-        r = rect(s, x, y, w, 0.26, fill, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.15)
-        text(s, x, y, w, 0.26, label, size=8, color=ink, font=self.t.body_font,
-             bold=True, align="center", anchor="middle", caps=True, spacing=1)
-        return r
+    def label(self, s, x, y, w, label, color=None, size=10):
+        """Quiet small-caps caption used inside visuals (never as a heading badge)."""
+        return text(s, x, y, w, 0.3, label, size=size, color=color or self.t.light_muted,
+                    font=self.t.body_font, bold=True, caps=True, spacing=1.2)
 
     def proposed_tag(self, s, x, y):
-        self.chip(s, x, y, "Proposed", fill="#F59E0B", ink="#111111")
+        """Status flag for values Claude suggested that are not yet approved."""
+        w = 0.98
+        rrect(s, x, y, w, 0.27, "#F4D58D", r=0.135)
+        text(s, x, y, w, 0.27, "Proposed", size=9, color="#4A3500", font=self.t.body_font,
+             bold=True, align="center", anchor="middle", caps=True, spacing=1)
+
+    def _title_lines(self, title, size, width):
+        per_line = max(6, int(width / (0.5 * size / 72)))
+        words, lines, cur = title.split(), 1, 0
+        for w_ in words:
+            if cur and cur + 1 + len(w_) > per_line:
+                lines += 1
+                cur = len(w_)
+            else:
+                cur += (1 if cur else 0) + len(w_)
+        return lines
 
     def content(self, title, body=None, eyebrow=None, right_bg=None, bullets=None):
-        """Orca-style split slide: text panel left, visual area right."""
+        """Split slide: type column on the left, visual area on the right,
+        set in a softly rounded inset panel instead of a hard half-page block."""
         t = self.t
         s = self.new(t.light_bg)
         if right_bg is not False:
-            rect(s, LEFT_W, 0, W - LEFT_W, H, right_bg or t.light_surface)
-        self.chip(s, 0.55, 0.85, eyebrow or self.section)
-        text(s, 0.55, 1.25, LEFT_W - 0.9, 1.3, title, size=28, color=t.light_text,
-             font=t.head_font, line_spacing=0.95)
-        y = 2.55 if len(title) > 16 else 2.1
+            rrect(s, LEFT_W, 0.4, W - LEFT_W - 0.4, H - 0.8, right_bg or t.light_surface,
+                  r=PANEL_R)
+        colw = LEFT_W - 0.95
+        size = 34 if len(title) <= 18 else 30 if len(title) <= 26 else 26
+        text(s, 0.6, 0.85, colw, 1.8, title, size=size, color=t.light_text,
+             font=t.head_font, line_spacing=0.98)
+        y = 0.85 + self._title_lines(title, size, colw) * size * 1.02 / 72 + 0.35
         if body:
             paras = body if isinstance(body, list) else [body]
-            text(s, 0.55, y, LEFT_W - 0.95, 3.0, paras, size=11, color=t.light_muted,
-                 font=t.body_font, line_spacing=1.15, para_after=7)
-            y += min(3.0, 0.3 + 0.19 * sum(len(p) // 48 + 1 for p in paras))
+            text(s, 0.6, y, colw, 3.2, paras, size=13, color=t.light_muted,
+                 font=t.body_font, line_spacing=1.22, para_after=8)
+            per = int(colw / (0.5 * 13 / 72))
+            y += sum(-(-len(p) // per) for p in paras) * 13 * 1.22 / 72 + 0.15 * len(paras) + 0.2
         if bullets:
-            text(s, 0.55, y + 0.1, LEFT_W - 0.95, H - y - 1.0, bullets, size=10.5,
-                 color=t.light_text, font=t.body_font, bullets=True, para_after=5)
-        self.content_slides.append((s, self.section))
+            text(s, 0.6, y, colw, H - y - 1.0, bullets, size=12, color=t.light_text,
+                 font=t.body_font, bullets=True, para_after=6, line_spacing=1.15)
+        self.content_slides.append((s, self.section, True))
         return s
 
     def full(self, title, eyebrow=None, bg=None, subtitle=None):
-        """Full-width slide with heading across the top."""
+        """Full-width slide with the heading across the top."""
         t = self.t
         bg = bg or t.light_bg
         ink = readable_on(bg, t.dark_text if is_dark(bg) else "#FFFFFF", t.light_text)
         s = self.new(bg)
-        self.chip(s, 0.55, 0.55, eyebrow or self.section)
-        text(s, 0.55, 0.92, W - 1.1, 0.6, title, size=26, color=ink, font=t.head_font)
+        text(s, 0.6, 0.7, W - 1.2, 0.7, title, size=34, color=ink, font=t.head_font)
         if subtitle:
-            text(s, 0.55, 1.5, W - 1.1, 0.5, subtitle, size=11,
+            text(s, 0.6, 1.42, 8.6, 0.6, subtitle, size=14, line_spacing=1.2,
                  color=t.dark_muted if is_dark(bg) else t.light_muted, font=t.body_font)
-        self.content_slides.append((s, self.section))
+        self.content_slides.append((s, self.section, False))
         return s
 
     def divider(self, title, blurb=None):
+        """Section opener. Type sits low on the page with room above it."""
         self.section_no += 1
         self.section = title
-        self.toc.append((self.section_no, title))
         t = self.t
         s = self.new(t.dark_bg)
-        text(s, 0.8, 2.55, 3, 0.5, f"{self.section_no:02d}", size=14, color=t.accent,
-             font=t.body_font, bold=True, spacing=2)
-        text(s, 0.8, 2.95, 9, 1.2, title, size=48, color=t.dark_text, font=t.head_font)
+        self.divider_slides.append((title, s))
+        text(s, 0.8, 3.05, 10.5, 1.3, title, size=64, color=t.dark_text, font=t.head_font,
+             anchor="bottom", line_spacing=0.95)
+        rule(s, 0.84, 4.62, 0.7, t.accent, weight=0.03)
         if blurb:
-            text(s, 0.8, 4.2, 7.5, 1.2, blurb, size=13, color=t.dark_muted, font=t.body_font)
+            text(s, 0.82, 4.9, 6.6, 1.2, blurb, size=17, color=t.dark_muted,
+                 font=t.body_font, line_spacing=1.25)
         v = self.mark_for("dark")
         im = self.logo(v)
         if im:
-            picture(s, im, W - 1.35, 0.45, 0.8, 0.45, align="right")
+            picture(s, im, 0.8, 0.6, 0.8, 0.45, align="left")
         return s
 
     def finish(self):
         t = self.t
         total = len(self.prs.slides)
         mark = self.logo(self.mark_for("light"))
-        for idx, slide in enumerate(self.prs.slides, start=1):
-            if not any(slide is c[0] for c in self.content_slides):
-                continue
-            sec = next(c[1] for c in self.content_slides if c[0] is slide)
-            text(slide, 0.55, H - 0.42, 6, 0.25,
-                 f"{self.company}  |  Brand Guidelines  |  {sec}", size=7.5,
-                 color=t.light_muted, font=t.body_font)
-            text(slide, W - 1.3, H - 0.42, 0.8, 0.25, f"{idx} / {total}", size=7.5,
-                 color=t.light_muted, font=t.body_font, align="right")
+        order = {id(sl): i for i, sl in enumerate(self.prs.slides, start=1)}
+        for slide, sec, split in self.content_slides:
+            idx = order[id(slide)]
+            fy = H - 0.62
+            x = 0.6
             if mark:
-                picture(slide, mark, W - 1.0, 0.4, 0.5, 0.32, align="right")
+                picture(slide, mark, x, fy - 0.01, 0.3, 0.26, align="left")
+                x += 0.42
+            text(slide, x, fy, 3.2, 0.25, f"{self.company}   {sec}", size=9,
+                 color=t.light_muted, font=t.body_font, anchor="middle")
+            if split:
+                px, pw = LEFT_W - 1.1, 0.7
+            else:
+                px, pw = W - 1.3, 0.7
+            text(slide, px, fy, pw, 0.25, f"{idx}", size=9, color=t.light_muted,
+                 font=t.body_font, align="right", anchor="middle")
+        # table of contents shows where each section starts
+        for (title, sl), (box_slide, y_, x_) in zip(self.divider_slides, self.toc_slots):
+            text(box_slide, x_, y_, 1.0, 0.5, str(order[id(sl)]), size=14, color=t.light_muted,
+                 font=t.body_font, align="right", anchor="middle")
 
     # ==================================================================
     # Sections
@@ -367,18 +430,20 @@ class Deck:
         im = self.logo(v)
         if im:
             picture(s, im, 0.8, 0.7, 2.6, 0.75, align="left")
-        text(s, 0.8, 2.9, 9, 1.0, g(b, "meta", "guide_title", default="Brand Guidelines"),
-             size=54, color=ink, font=t.head_font)
+        title = g(b, "meta", "guide_title", default="Brand Guidelines")
+        text(s, 0.8, 2.2, 10.8, 2.4, title, size=72, color=ink, font=t.head_font,
+             anchor="bottom", line_spacing=0.92)
         sub = g(b, "meta", "subtitle") or g(b, "foundation", "tagline")
         if sub:
-            text(s, 0.82, 4.05, 9, 0.6, sub, size=16, color=muted, font=t.body_font)
-        rect(s, 0.82, 4.85, 0.9, 0.06, t.accent)
-        ver = " | ".join(x for x in [
+            text(s, 0.84, 4.95, 8.4, 0.9, sub, size=20, color=muted, font=t.body_font,
+                 line_spacing=1.2)
+        rule(s, 0.86, 4.72, 0.7, t.accent, weight=0.03)
+        ver = "   ".join(x for x in [
             (f"Version {g(b, 'meta', 'version')}" if g(b, "meta", "version") else None),
             g(b, "meta", "date")] if x)
-        text(s, 0.82, H - 0.9, 8, 0.3, ver, size=9, color=muted, font=t.body_font)
-        text(s, W - 5.3, H - 0.9, 4.5, 0.3, f"\u00A9 {self.company}. All rights reserved.",
-             size=9, color=muted, font=t.body_font, align="right")
+        text(s, 0.84, H - 0.85, 6, 0.3, ver, size=11, color=muted, font=t.body_font)
+        text(s, W - 5.4, H - 0.85, 4.6, 0.3, f"© {self.company}. All rights reserved.",
+             size=11, color=muted, font=t.body_font, align="right")
 
     def purpose(self):
         b, t = self.b, self.t
@@ -386,37 +451,37 @@ class Deck:
         if not p:
             return
         s = self.new(t.light_bg)
-        self.chip(s, 0.8, 1.2, "About this guide")
-        text(s, 0.8, 1.65, 7.6, 3.5, [p], size=17, color=t.light_text,
-             font=t.head_font, line_spacing=1.2)
-        side = []
-        if g(b, "meta", "audience"):
-            side.append([("Who it is for", {"bold": True, "color": t.light_text})])
-            side.append(g(b, "meta", "audience"))
-        if g(b, "governance", "asset_location"):
-            side.append([("Where to get files", {"bold": True, "color": t.light_text})])
-            side.append(g(b, "governance", "asset_location"))
-        if side:
-            text(s, 9.2, 1.7, 3.4, 4.5, side, size=10.5, color=t.light_muted,
-                 font=t.body_font, para_after=6)
-        self.content_slides.append((s, "Introduction"))
+        text(s, 0.9, 1.3, 7.4, 4.6, [p], size=24, color=t.light_text,
+             font=t.head_font, line_spacing=1.22)
+        y = 1.4
+        for head, val in (("Who it is for", g(b, "meta", "audience")),
+                          ("Where to get files", g(b, "governance", "asset_location"))):
+            if not val:
+                continue
+            rule(s, 9.2, y, 3.3, t.hair)
+            text(s, 9.2, y + 0.18, 3.3, 0.3, head, size=11, bold=True, color=t.light_text,
+                 font=t.body_font)
+            text(s, 9.2, y + 0.5, 3.3, 1.4, val, size=12, color=t.light_muted,
+                 font=t.body_font, line_spacing=1.2)
+            y += 2.0
+        self.content_slides.append((s, "Introduction", False))
 
     def toc_slide(self, sections):
         t = self.t
         s = self.new(t.light_bg)
-        rect(s, 0, 0, LEFT_W, H, t.dark_bg)
-        text(s, 0.55, 1.2, LEFT_W - 1, 1, "Contents", size=34, color=t.dark_text,
+        rrect(s, 0.4, 0.4, LEFT_W - 0.4, H - 0.8, t.dark_bg, r=PANEL_R)
+        text(s, 0.9, 0.95, LEFT_W - 1.3, 1, "Contents", size=36, color=t.dark_text,
              font=t.head_font)
-        y = 1.1
-        col_x = [5.0, 9.0]
+        x0, cw = 5.4, W - 5.4 - 0.9
+        rh = min(0.8, 5.6 / max(1, len(sections)))
+        y0 = (H - rh * len(sections)) / 2
         for i, name in enumerate(sections):
-            cx = col_x[0] if i < 6 else col_x[1]
-            cy = y + (i % 6) * 0.85
-            text(s, cx, cy, 0.6, 0.4, f"{i + 1:02d}", size=13, color=t.accent,
-                 font=t.body_font, bold=True)
-            text(s, cx + 0.6, cy - 0.02, 3.2, 0.5, name, size=17, color=t.light_text,
-                 font=t.head_font)
-            rect(s, cx, cy + 0.55, 3.6, 0.01, t.border)
+            y = y0 + i * rh
+            rule(s, x0, y, cw, t.hair)
+            text(s, x0, y, cw - 1.2, rh, name, size=20, color=t.light_text,
+                 font=t.head_font, anchor="middle")
+            self.toc_slots.append((s, y + rh / 2 - 0.25, x0 + cw - 1.0))
+        rule(s, x0, y0 + rh * len(sections), cw, t.hair)
 
     def mission(self, closing=False):
         b, t = self.b, self.t
@@ -425,10 +490,9 @@ class Deck:
             return
         s = self.new(t.accent if not closing else t.dark_bg)
         ink = readable_on(t.accent) if not closing else t.dark_text
-        chipfill = t.dark_bg if not closing else t.accent
-        self.chip(s, 0.9, 2.45, "Our mission", fill=chipfill)
-        text(s, 0.9, 2.85, 10.5, 2.4, m, size=38, color=ink, font=t.head_font,
-             line_spacing=1.05)
+        size = 46 if len(m) < 110 else 38 if len(m) < 190 else 30
+        text(s, 0.9, 1.2, 10.6, 5.0, m, size=size, color=ink, font=t.head_font,
+             line_spacing=1.08, anchor="middle")
         if closing:
             im = self.logo(variant_for(b, "dark"))
             if im:
@@ -442,25 +506,25 @@ class Deck:
         if not has:
             return
         self.divider("Brand Foundation", "Who we are, what we stand for, and how we sound.")
+        PX = RX            # content x inside the inset panel
+        PW = RW
 
         # Positioning + vision + boilerplate
         if f.get("positioning") or f.get("boilerplate") or f.get("vision"):
-            s = self.content("Who We Are", f.get("positioning"), right_bg=t.light_surface)
-            y = 0.9
+            s = self.content("Who We Are", f.get("positioning"))
+            y = 0.95
             if f.get("vision"):
-                text(s, RX, y, RW, 0.3, "VISION", size=9, color=t.accent, bold=True,
-                     font=t.body_font, spacing=1.5)
-                text(s, RX, y + 0.32, RW, 1.1, f["vision"], size=18, color=t.light_text,
-                     font=t.head_font)
-                y += 1.75
+                self.label(s, PX, y, PW, "Vision")
+                n = len(f["vision"])
+                vs = 28 if n < 90 else 22
+                text(s, PX, y + 0.38, PW, 1.9, f["vision"], size=vs, color=t.light_text,
+                     font=t.head_font, line_spacing=1.1)
+                y += 0.38 + (1.3 if n < 90 else 1.0) + 0.55
             if f.get("boilerplate"):
-                bh = min(H - y - 0.9, 1.05 + 0.21 * (len(f["boilerplate"]) // 105 + 1))
-                rect(s, RX, y, RW, bh, "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg,
-                     line=t.border)
-                text(s, RX + 0.3, y + 0.25, 4, 0.3, "BOILERPLATE  |  approved company description",
-                     size=8.5, color=t.accent, bold=True, font=t.body_font, spacing=1)
-                text(s, RX + 0.3, y + 0.6, RW - 0.6, bh - 0.8, f["boilerplate"], size=11,
-                     color=t.light_text, font=t.body_font, line_spacing=1.2)
+                rule(s, PX, y, PW, t.hair)
+                self.label(s, PX, y + 0.25, PW, "Approved company description")
+                text(s, PX, y + 0.65, PW, H - y - 1.8, f["boilerplate"], size=13.5,
+                     color=t.light_text, font=t.body_font, line_spacing=1.28)
 
         # Pillars / values
         pillars = f.get("pillars") or []
@@ -468,21 +532,22 @@ class Deck:
             s = self.full(f.get("pillars_title") or "Brand Pillars",
                           subtitle=f.get("pillars_intro"))
             n = len(pillars[:4])
-            gap = 0.3
-            cw = (W - 1.1 - gap * (n - 1)) / n
+            gap = 0.5
+            cw = (W - 1.2 - gap * (n - 1)) / n
             for i, p in enumerate(pillars[:4]):
-                x = 0.55 + i * (cw + gap)
-                rect(s, x, 2.2, cw, 4.4, t.light_surface)
-                rect(s, x, 2.2, cw, 0.08, t.accent)
-                text(s, x + 0.3, 2.55, cw - 0.6, 0.8, p.get("name", ""), size=20,
+                x = 0.6 + i * (cw + gap)
+                rule(s, x, 2.35, cw, t.light_text, weight=0.015)
+                text(s, x, 2.6, cw, 0.8, p.get("name", ""), size=34,
                      color=t.light_text, font=t.head_font)
+                y = 3.55
                 if p.get("description"):
-                    text(s, x + 0.3, 3.3, cw - 0.6, 1.2, p["description"], size=10.5,
-                         color=t.light_muted, font=t.body_font)
+                    text(s, x, y, cw, 1.3, p["description"], size=16,
+                         color=t.light_muted, font=t.body_font, line_spacing=1.2)
+                    y += 0.5 + 0.3 * (len(p["description"]) // 32)
                 pts = p.get("points") or []
                 if pts:
-                    text(s, x + 0.3, 4.3 if p.get("description") else 3.4, cw - 0.6, 2.2,
-                         pts, size=10.5, color=t.light_text, font=t.body_font, bullets=True)
+                    text(s, x, y, cw, H - y - 1.0, pts, size=14, color=t.light_text,
+                         font=t.body_font, bullets=True, para_after=9)
 
         values = f.get("values") or []
         if values:
@@ -490,19 +555,20 @@ class Deck:
             n = len(values[:6])
             cols = 3 if n > 4 else n
             rows = (n + cols - 1) // cols
-            cw = (W - 1.1 - 0.3 * (cols - 1)) / cols
+            gap = 0.5
+            cw = (W - 1.2 - gap * (cols - 1)) / cols
             ch = (4.6 - 0.3 * (rows - 1)) / rows
             for i, v in enumerate(values[:6]):
-                x = 0.55 + (i % cols) * (cw + 0.3)
-                y = 2.0 + (i // cols) * (ch + 0.3)
-                rect(s, x, y, cw, ch, t.light_surface)
+                x = 0.6 + (i % cols) * (cw + gap)
+                y = 2.1 + (i // cols) * (ch + 0.3)
+                rule(s, x, y, cw, t.hair)
                 name = v.get("name") if isinstance(v, dict) else str(v)
                 desc = v.get("description") if isinstance(v, dict) else None
-                text(s, x + 0.3, y + 0.3, cw - 0.6, 0.5, name, size=17, color=t.light_text,
+                text(s, x, y + 0.25, cw, 0.5, name, size=22, color=t.light_text,
                      font=t.head_font)
                 if desc:
-                    text(s, x + 0.3, y + 0.85, cw - 0.6, ch - 1.0, desc, size=10.5,
-                         color=t.light_muted, font=t.body_font)
+                    text(s, x, y + 0.85, cw, ch - 1.0, desc, size=13,
+                         color=t.light_muted, font=t.body_font, line_spacing=1.2)
 
         if f.get("direction") and f.get("direction_public", True):
             d = f["direction"]
@@ -510,7 +576,8 @@ class Deck:
             s = self.content("Where We Are Going",
                              "Our direction shapes how the brand shows up. Use it to "
                              "judge whether new work moves us forward.")
-            text(s, RX + 0.3, 0.9, RW - 0.6, H - 1.9, paras, size=24 if len(" ".join(paras)) < 260 else 17,
+            text(s, PX, 0.9, PW, H - 1.8, paras,
+                 size=28 if len(" ".join(paras)) < 260 else 20,
                  color=t.light_text, font=t.head_font, line_spacing=1.15, para_after=14,
                  anchor="middle")
 
@@ -522,43 +589,45 @@ class Deck:
                              bullets=v.get("tone_notes"))
             if traits:
                 rows = traits[:6]
-                rh = min(0.9, 5.4 / len(rows))
-                text(s, RX + 0.2, 0.85, 3.8, 0.3, "WE ARE", size=9, color=t.accent,
-                     bold=True, font=t.body_font, spacing=1.5)
-                text(s, RX + 4.3, 0.85, 3.8, 0.3, "WE ARE NOT", size=9, color="#C0392B",
-                     bold=True, font=t.body_font, spacing=1.5)
+                rh = min(0.95, 5.2 / len(rows))
+                half = PW / 2
+                self.label(s, PX, 0.95, half, "We are", color=t.accent)
+                self.label(s, PX + half, 0.95, half, "We are not", color=t.bad)
                 for i, tr in enumerate(rows):
-                    y = 1.25 + i * rh
-                    rect(s, RX, y, RW, rh - 0.1, "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg)
-                    text(s, RX + 0.2, y + 0.08, 3.9, rh - 0.25,
-                         [[(tr.get("we_are", ""), {"bold": True, "size": 13})],
-                          tr.get("we_are_note", "")] if tr.get("we_are_note") else
-                         [[(tr.get("we_are", ""), {"bold": True, "size": 13})]],
-                         size=9.5, color=t.light_text, font=t.body_font, anchor="middle",
-                         para_after=1)
-                    text(s, RX + 4.3, y + 0.08, 3.9, rh - 0.25, tr.get("we_are_not", ""),
-                         size=13, color=t.light_muted, font=t.body_font, anchor="middle")
+                    y = 1.45 + i * rh
+                    rule(s, PX, y, PW, t.hair)
+                    lines = [[(tr.get("we_are", ""), {"bold": True, "size": 16})]]
+                    if tr.get("we_are_note"):
+                        lines.append(tr["we_are_note"])
+                    text(s, PX, y + 0.05, half - 0.3, rh - 0.1, lines, size=11.5,
+                         color=t.light_text, font=t.body_font, anchor="middle", para_after=1)
+                    text(s, PX + half, y + 0.05, half - 0.1, rh - 0.1, tr.get("we_are_not", ""),
+                         size=16, color=t.light_muted, font=t.body_font, anchor="middle")
 
         # Audiences
         auds = g(self.b, "audiences", default=[]) or []
         if auds:
             s = self.full("Who We Speak To")
             n = len(auds[:3])
-            cw = (W - 1.1 - 0.3 * (n - 1)) / n
+            gap = 0.5
+            cw = (W - 1.2 - gap * (n - 1)) / n
             for i, a in enumerate(auds[:3]):
-                x = 0.55 + i * (cw + 0.3)
-                rect(s, x, 1.9, cw, 4.8, t.light_surface)
-                text(s, x + 0.3, 2.15, cw - 0.6, 0.5, a.get("name", ""), size=19,
+                x = 0.6 + i * (cw + gap)
+                rule(s, x, 2.0, cw, t.light_text, weight=0.02)
+                text(s, x, 2.25, cw, 0.5, a.get("name", ""), size=24,
                      color=t.light_text, font=t.head_font)
+                y = 2.85
                 if a.get("titles"):
-                    text(s, x + 0.3, 2.7, cw - 0.6, 0.6, a["titles"], size=10,
+                    text(s, x, y, cw, 0.6, a["titles"], size=12,
                          color=t.light_muted, font=t.body_font)
+                    y += 0.7
                 if a.get("needs"):
-                    text(s, x + 0.3, 3.35, cw - 0.6, 1.1, a["needs"], size=10.5,
-                         color=t.light_text, font=t.body_font, italic=True)
+                    text(s, x, y, cw, 1.2, a["needs"], size=14,
+                         color=t.light_text, font=t.head_font, italic=False, line_spacing=1.2)
+                    y += 1.4
                 if a.get("tone"):
-                    text(s, x + 0.3, 4.4, cw - 0.6, 2.2, a["tone"], size=10,
-                         color=t.light_text, font=t.body_font, bullets=True)
+                    text(s, x, y, cw, H - y - 1.0, a["tone"], size=12,
+                         color=t.light_text, font=t.body_font, bullets=True, para_after=5)
 
     # ---------- logo ----------
     def logos(self):
@@ -586,27 +655,27 @@ class Deck:
         tiles = vs[:6]
         cols = 3 if len(tiles) > 4 else 2
         rows = (len(tiles) + cols - 1) // cols
-        gap = 0.25
+        gap = 0.3
         cw = (RW - gap * (cols - 1)) / cols
-        ch = (H - 1.6 - gap * (rows - 1)) / rows
+        ch = (H - 1.9 - gap * (rows - 1)) / rows
         for i, v in enumerate(tiles):
             x = RX + (i % cols) * (cw + gap)
-            y = 0.8 + (i // cols) * (ch + gap)
+            y = 0.85 + (i // cols) * (ch + gap)
             vbg = self.variant_bg(v)
-            rect(s, x, y, cw, ch - 0.75, vbg, line=t.border if not is_dark(vbg) else None)
+            rrect(s, x, y, cw, ch - 0.95, vbg, line=t.border if not is_dark(vbg) else None, r=0.12)
             im = self.logo(v)
             if im:
-                picture(s, im, x + cw * 0.18, y + 0.25, cw * 0.64, ch - 1.25)
+                picture(s, im, x + cw * 0.18, y + 0.25, cw * 0.64, ch - 1.45)
             label = v.get("name", v.get("id", ""))
             if v.get("id") == L.get("preferred"):
                 label += "  (preferred)"
-            text(s, x, y + ch - 0.68, cw, 0.25, label, size=9.5, bold=True,
+            text(s, x, y + ch - 0.85, cw, 0.28, label, size=12, bold=True,
                  color=t.light_text, font=t.body_font)
             if v.get("usage"):
-                text(s, x, y + ch - 0.45, cw, 0.45, v["usage"], size=8, color=t.light_muted,
-                     font=t.body_font)
+                text(s, x, y + ch - 0.57, cw, 0.5, v["usage"], size=10, color=t.light_muted,
+                     font=t.body_font, line_spacing=1.1)
             if v.get("proposed"):
-                self.proposed_tag(s, x + 0.1, y + 0.1)
+                self.proposed_tag(s, x + 0.12, y + 0.12)
 
         # Clear space + minimum size
         cs = L.get("clear_space") or {}
@@ -624,24 +693,22 @@ class Deck:
                 picture(s, diag, RX, 0.8, RW, 3.9)
                 text(s, RX, 4.75, RW, 0.4,
                      f"x = {cs.get('unit_description', str(cs['ratio']) + ' x logo height')}",
-                     size=10, color=t.light_muted, font=t.body_font, align="center")
+                     size=11, color=t.light_muted, font=t.body_font, align="center")
             elif im:
                 picture(s, im, RX + 1.5, 1.2, RW - 3, 2.6)
             if ms:
-                y = 5.35
+                y = 5.3
                 items = [(k.replace("_", " ").title(), v) for k, v in ms.items() if v]
                 cw = RW / max(1, len(items))
                 for i, (k, v) in enumerate(items):
                     x = RX + i * cw
-                    rect(s, x, y, cw - 0.15, 1.15, "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg,
-                         line=t.border)
-                    text(s, x + 0.2, y + 0.15, cw - 0.5, 0.3, k.upper(), size=8, bold=True,
-                         color=t.accent, font=t.body_font, spacing=1)
-                    text(s, x + 0.2, y + 0.45, cw - 0.5, 0.6, str(v), size=14,
+                    rule(s, x, y, cw - 0.3, t.hair)
+                    self.label(s, x, y + 0.18, cw - 0.3, k)
+                    text(s, x, y + 0.5, cw - 0.3, 0.6, str(v), size=18,
                          color=t.light_text, font=t.head_font)
             if cs.get("small_size_rule"):
-                text(s, 0.55, 5.3, LEFT_W - 0.95, 1.4, cs["small_size_rule"], size=9.5,
-                     color=t.light_muted, font=t.body_font, italic=True)
+                text(s, 0.6, 5.3, LEFT_W - 0.95, 1.4, cs["small_size_rule"], size=11,
+                     color=t.light_muted, font=t.body_font, line_spacing=1.2)
 
         # Background pairings (approved)
         pairs = L.get("backgrounds") or []
@@ -651,23 +718,23 @@ class Deck:
             n = len(pairs[:8])
             cols = 4 if n > 3 else n
             rows = (n + cols - 1) // cols
-            cw = (W - 1.1 - 0.25 * (cols - 1)) / cols
-            ch = min(2.4, (5.0 - 0.25 * (rows - 1)) / rows)
+            cw = (W - 1.2 - 0.3 * (cols - 1)) / cols
+            ch = min(2.6, (5.0 - 0.3 * (rows - 1)) / rows)
             for i, pr in enumerate(pairs[:8]):
-                x = 0.55 + (i % cols) * (cw + 0.25)
-                y = 2.1 + (i // cols) * (ch + 0.25)
+                x = 0.6 + (i % cols) * (cw + 0.3)
+                y = 2.2 + (i // cols) * (ch + 0.3)
                 pbg = color_by_ref(b, pr.get("background")) or t.light_bg
                 v = next((vv for vv in vs if vv.get("id") == pr.get("variant")), None)
-                rect(s, x, y, cw, ch - 0.45, pbg, line=t.border if not is_dark(pbg) else None)
+                rrect(s, x, y, cw, ch - 0.55, pbg, line=t.border if not is_dark(pbg) else None, r=0.12)
                 im = self.logo(v)
                 if im:
                     picture(s, im, x + cw * 0.2, y + 0.25, cw * 0.6, ch - 0.95)
                 status = pr.get("status", "approved")
                 col = {"preferred": t.accent, "approved": t.light_text,
                        "minimal": "#B7791F"}.get(status, t.light_text)
-                text(s, x, y + ch - 0.38, cw, 0.3,
-                     [[(status.upper(), {"bold": True, "color": col, "size": 8}),
-                       ("   " + (pr.get("note") or ""), {"size": 8})]],
+                text(s, x, y + ch - 0.45, cw, 0.4,
+                     [[(status.capitalize(), {"bold": True, "color": col, "size": 11}),
+                       ("   " + (pr.get("note") or ""), {"size": 10})]],
                      color=t.light_muted, font=t.body_font)
 
         # Misuse grid
@@ -682,21 +749,19 @@ class Deck:
                              "because of how our brand has actually been misused.")
             y = 0.85
             if where:
-                text(s, RX, y, RW, 0.3, "WHERE OUR LOGO DOES NOT APPEAR", size=9,
-                     color="#C0392B", bold=True, font=t.body_font, spacing=1.2)
-                text(s, RX, y + 0.35, RW, 2.4, where[:8], size=11, color=t.light_text,
-                     font=t.body_font, bullets=True)
-                y += 0.55 + 0.32 * min(8, len(where))
+                self.label(s, RX, y, RW, "Where our logo does not appear", color=t.bad)
+                text(s, RX, y + 0.4, RW, 2.6, where[:8], size=13, color=t.light_text,
+                     font=t.body_font, bullets=True, para_after=6)
+                y += 0.75 + 0.36 * min(8, len(where))
             if custom:
                 imgs = [c for c in custom if isinstance(c, dict) and c.get("image")]
                 txts = [c if isinstance(c, str) else c.get("text", "") for c in custom
                         if not (isinstance(c, dict) and c.get("image"))]
                 if txts:
-                    text(s, RX, y + 0.1, RW, 0.3, "ALSO DO NOT", size=9, color="#C0392B",
-                         bold=True, font=t.body_font, spacing=1.2)
-                    text(s, RX, y + 0.45, RW, 2.4, txts[:8], size=11, color=t.light_text,
-                         font=t.body_font, bullets=True)
-                    y += 0.65 + 0.32 * min(8, len(txts))
+                    self.label(s, RX, y + 0.1, RW, "Also do not", color=t.bad)
+                    text(s, RX, y + 0.5, RW, 2.6, txts[:8], size=13, color=t.light_text,
+                         font=t.body_font, bullets=True, para_after=6)
+                    y += 0.8 + 0.36 * min(8, len(txts))
                 if imgs and y < 5.2:
                     n = min(4, len(imgs))
                     cw = (RW - 0.2 * (n - 1)) / n
@@ -723,48 +788,64 @@ class Deck:
                     picture(s, p, RX, 0.9 + i * 1.9, RW, 1.6)
 
     def list_slide(self, title, items, intro=None, kind="rule", dos=None):
-        """Full-width card grid. kind: 'rule' (numbered), 'dont' (X), 'do' (check).
-        If dos is given, renders two columns: dos (check) left, items (X) right."""
+        """Typographic list on hairline rows. kind: 'rule' (numbered), 'dont', 'do'.
+        If dos is given, renders two columns: dos left, items (don'ts) right."""
         t = self.t
         s = self.full(title, subtitle=intro)
-        top = (2.05 if intro else 1.8) + (0.35 if dos else 0)
-        avail = H - top - 0.75
+        top = (2.45 if intro else 1.95) + (0.45 if dos else 0)
+        avail = H - top - 0.95
 
-        def cards(lst, x0, colw, cols, k):
+        def rows(lst, x0, colw, cols, k):
             lst = lst[:12]
-            rows = max(1, (len(lst) + cols - 1) // cols)
-            ch = min(1.0, (avail - 0.15 * (rows - 1)) / rows)
+            nrows = max(1, (len(lst) + cols - 1) // cols)
+            rh = min(1.15, avail / nrows)
+            fs = 20 if nrows <= 3 else 17 if nrows <= 5 else 15
             for i, it in enumerate(lst):
-                x = x0 + (i % cols) * (colw + 0.25)
-                y = top + (i // cols) * (ch + 0.15)
-                rect(s, x, y, colw, ch, t.light_surface)
+                x = x0 + (i % cols) * (colw + 0.5)
+                y = top + (i // cols) * rh
+                rule(s, x, y, colw, t.hair)
                 if k == "rule":
-                    rect(s, x + 0.22, y + ch / 2 - 0.17, 0.34, 0.34, t.accent, shape=MSO_SHAPE.OVAL)
-                    text(s, x + 0.22, y + ch / 2 - 0.18, 0.34, 0.34, str(i + 1), size=10, bold=True,
-                         color=readable_on(t.accent), align="center", anchor="middle", font=t.body_font)
+                    text(s, x, y, 0.55, rh, f"{i + 1}", size=fs + 5, color=t.accent,
+                         font=t.head_font, anchor="middle")
+                    tx = x + 0.65
                 else:
-                    self._x_badge(s, x + 0.24, y + ch / 2 - 0.15, ok=(k == "do"))
-                text(s, x + 0.75, y + 0.08, colw - 0.95, ch - 0.16, str(it), size=12.5,
-                     color=t.light_text, font=t.body_font, anchor="middle")
+                    self._mark(s, x + 0.02, y + rh / 2 - 0.13, ok=(k == "do"))
+                    tx = x + 0.55
+                text(s, tx, y + 0.06, colw - (tx - x) - 0.1, rh - 0.12, str(it), size=fs,
+                     color=t.light_text, font=t.body_font, anchor="middle", line_spacing=1.1)
         if dos:
-            cw = (W - 1.1 - 0.25) / 2
-            text(s, 0.55, top - 0.35, cw, 0.3, "DO", size=9, bold=True, color="#2E9E5B",
-                 font=t.body_font, spacing=1.5)
-            text(s, 0.55 + cw + 0.25, top - 0.35, cw, 0.3, "DON'T", size=9, bold=True,
-                 color="#D93025", font=t.body_font, spacing=1.5)
-            cards(dos, 0.55, cw, 1, "do")
-            cards(items, 0.55 + cw + 0.25, cw, 1, "dont")
+            cw = (W - 1.2 - 0.6) / 2
+            self.label(s, 0.6, top - 0.5, cw, "Do", color=t.good, size=11)
+            self.label(s, 0.6 + cw + 0.6, top - 0.5, cw, "Don't", color=t.bad, size=11)
+            rows(dos, 0.6, cw, 1, "do")
+            rows(items, 0.6 + cw + 0.6, cw, 1, "dont")
         else:
-            cols = 2 if len(items) > 3 else 1
-            cw = (W - 1.1 - 0.25 * (cols - 1)) / cols
-            cards(items, 0.55, cw, cols, kind)
+            cols = 2 if len(items) > 4 else 1
+            cw = (W - 1.2 - 0.5 * (cols - 1)) / cols
+            rows(items, 0.6, cw, cols, kind)
         return s
 
+    def _mark(self, s, x, y, ok=False, d=0.26):
+        """Drawn status mark (filled disc with a stroked check or cross)."""
+        col = self.t.good if ok else self.t.bad
+        rect(s, x, y, d, d, col, shape=MSO_SHAPE.OVAL)
+        u = d / 10.0
+        pts = [(2.6, 5.3), (4.4, 7.0), (7.6, 3.2)] if ok else None
+        strokes = [pts] if ok else [[(3.2, 3.2), (6.8, 6.8)], [(6.8, 3.2), (3.2, 6.8)]]
+        for pl in strokes:
+            fb = s.shapes.build_freeform(Inches(x + pl[0][0] * u), Inches(y + pl[0][1] * u))
+            fb.add_line_segments([(Inches(x + px * u), Inches(y + py * u)) for px, py in pl[1:]],
+                                 close=False)
+            sh = fb.convert_to_shape()
+            sh.fill.background()
+            sh.line.color.rgb = rgb("#FFFFFF")
+            sh.line.width = Pt(1.6)
+            st = sh._element.find(qn("p:style"))
+            if st is not None:
+                sh._element.remove(st)
+
     def _x_badge(self, s, x, y, ok=False):
-        col = "#2E9E5B" if ok else "#D93025"
-        rect(s, x, y, 0.3, 0.3, col, shape=MSO_SHAPE.OVAL)
-        text(s, x, y - 0.01, 0.3, 0.3, "✓" if ok else "✕", size=11,
-             color="#FFFFFF", bold=True, align="center", anchor="middle", font="Arial")
+        self._mark(s, x, y, ok=ok, d=0.3)
 
     def logo_misuse(self):
         b, t = self.b, self.t
@@ -797,7 +878,7 @@ class Deck:
             elif k == "low_contrast":
                 img = fn(light_im, low_bg)
             else:
-                img = fn(light_im, t.light_bg, palette=palette)
+                img = fn(light_im, t.light_surface, palette=palette)
             tiles.append((img, cap))
         per = 8
         for page in range(0, len(tiles), per):
@@ -807,16 +888,15 @@ class Deck:
                           "Never alter the logo. These examples use our real logo to show what not to do.")
             cols = 4
             gap = 0.25
-            cw = (W - 1.1 - gap * (cols - 1)) / cols
+            cw = (W - 1.2 - gap * (cols - 1)) / cols
             ch = cw * TILE_RATIO
             for i, (img, cap) in enumerate(chunk):
-                x = 0.55 + (i % cols) * (cw + gap)
-                y = 2.05 + (i // cols) * (ch + 0.75)
-                rect(s, x - 0.01, y - 0.01, cw + 0.02, ch + 0.02, t.border)
-                picture(s, img, x, y, cw, ch)
-                self._x_badge(s, x + 0.08, y + 0.08)
-                text(s, x, y + ch + 0.08, cw, 0.55, cap, size=9, color=t.light_text,
-                     font=t.body_font)
+                x = 0.6 + (i % cols) * (cw + gap)
+                y = 2.05 + (i // cols) * (ch + 0.78)
+                picture(s, img, x, y, cw, ch, radius=0.12)
+                self._x_badge(s, x + 0.1, y + 0.1)
+                text(s, x, y + ch + 0.1, cw, 0.6, cap, size=11, color=t.light_text,
+                     font=t.body_font, line_spacing=1.1)
 
     # ---------- architecture / co-branding ----------
     def architecture(self):
@@ -827,19 +907,17 @@ class Deck:
         tiers = A.get("tiers") or []
         s = self.content("Brand Architecture", A.get("intro"), eyebrow="Logo")
         y = 0.9
-        rh = min(1.4, (H - 1.8) / max(1, len(tiers)))
+        rh = min(1.3, (H - 2.0) / max(1, len(tiers)))
         for i, tr in enumerate(tiers[:5]):
             yy = y + i * rh
-            rect(s, RX, yy, RW, rh - 0.12, "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg,
-                 line=t.border)
-            rect(s, RX, yy, 0.08, rh - 0.12, t.accent)
-            text(s, RX + 0.3, yy + 0.12, 2.2, 0.3, tr.get("name", f"Tier {i + 1}").upper(),
-                 size=9, bold=True, color=t.accent, font=t.body_font, spacing=1)
-            text(s, RX + 0.3, yy + 0.42, 2.6, rh - 0.6, tr.get("rule", ""), size=9,
-                 color=t.light_muted, font=t.body_font)
+            rule(s, RX, yy, RW, t.hair)
+            text(s, RX, yy + 0.2, 2.9, 0.4, tr.get("name", f"Tier {i + 1}"), size=18,
+                 color=t.light_text, font=t.head_font)
+            text(s, RX, yy + 0.62, 2.9, rh - 0.7, tr.get("rule", ""), size=11,
+                 color=t.light_muted, font=t.body_font, line_spacing=1.15)
             ex = tr.get("examples") or []
-            text(s, RX + 3.1, yy + 0.12, RW - 3.3, rh - 0.3, ", ".join(ex) if ex else "",
-                 size=12, color=t.light_text, font=t.head_font, anchor="middle")
+            text(s, RX + 3.3, yy + 0.1, RW - 3.3, rh - 0.2, ", ".join(ex) if ex else "",
+                 size=15, color=t.light_text, font=t.body_font, anchor="middle")
 
     def cobranding(self):
         b, t = self.b, self.t
@@ -862,7 +940,7 @@ class Deck:
         eh = 2.3
         for i, (bg, v, ink) in enumerate(examples):
             y = 0.9 + i * (eh + 0.35)
-            rect(s, RX, y, RW, eh, bg, line=t.border if not is_dark(bg) else None)
+            rrect(s, RX, y, RW, eh, bg, line=t.border if not is_dark(bg) else None, r=0.14)
             im = self.logo(v)
             if im:
                 picture(s, im, RX + 0.9, y + 0.6, RW / 2 - 1.5, eh - 1.2, align="right")
@@ -881,7 +959,7 @@ class Deck:
                  color=ink, align="center", anchor="middle", font=t.body_font, spacing=2)
         if C.get("min_gap"):
             text(s, RX, 0.9 + len(examples) * (eh + 0.35), RW, 0.3,
-                 f"Minimum space between logos: {C['min_gap']}", size=9.5,
+                 f"Minimum space between logos: {C['min_gap']}", size=12,
                  color=t.light_muted, font=t.body_font)
         donts = C.get("donts") or []
         if donts:
@@ -940,11 +1018,12 @@ class Deck:
                 stops = [color_by_ref(b, c) for c in gd.get("stops", [])]
                 stops = [c for c in stops if c]
                 if len(stops) >= 2:
-                    picture(s, gradient_image(stops, gd.get("angle", 90)), x, y, cw, ch - 0.45)
-                text(s, x, y + ch - 0.4, cw, 0.4,
+                    picture(s, gradient_image(stops, gd.get("angle", 90)), x, y, cw, ch - 0.55,
+                            radius=0.14)
+                text(s, x, y + ch - 0.45, cw, 0.4,
                      [[(gd.get("name", ""), {"bold": True}),
                        ("   " + " > ".join(stops) + (f"   {gd.get('angle')}°" if gd.get("angle") is not None else ""),
-                        {"color": t.light_muted})]], size=9, color=t.light_text, font=t.body_font)
+                        {"color": t.light_muted})]], size=11, color=t.light_text, font=t.body_font)
 
         self.modes()
         self.ratio()
@@ -953,36 +1032,50 @@ class Deck:
             self.list_slide("Color: What Not To Do", C["donts"], kind="dont")
 
     def _swatch_grid(self, s, chunk):
+        """Large rounded color fields with open captions. A short palette gets
+        one dominant swatch so the page has a focal point, not equal tiles."""
         t = self.t
         n = len(chunk)
         cols = 4 if n <= 8 else 6
         rows = (n + cols - 1) // cols
-        gap = 0.18
-        cw = (RW - gap * (cols - 1)) / cols
-        ch = min(3.4 if cols == 4 else 2.9, (H - 1.5 - gap * (rows - 1)) / rows)
+        gap = 0.28 if cols == 4 else 0.2
         small = cols == 6
+        weights = [1.0] * cols
+        if n <= 4 and n > 1:
+            cols = n
+            weights = [1.7] + [1.0] * (n - 1)
+        wsum = sum(weights[:cols])
+        unit = (RW - gap * (cols - 1)) / wsum
+        top, avail = 0.85, H - 1.7
+        most = max(1 + (1 if s_.get("cmyk") else 0) + (1 if s_.get("pms") else 0)
+                   for s_ in chunk) + 1
+        any_role = any(s_.get("role") for s_ in chunk)
         for i, sw in enumerate(chunk):
-            x = RX + (i % cols) * (cw + gap)
-            y = 0.8 + (i // cols) * (ch + gap)
+            r_, c_ = divmod(i, cols)
+            cw = unit * weights[c_]
+            x = RX + sum(unit * weights[k] + gap for k in range(c_))
             h = norm_hex(sw.get("hex")) or "#FF00FF"
-            card = "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg
-            sh = ch * (0.5 if not small else 0.45)
-            rect(s, x, y, cw, ch, card, line=t.border)
-            rect(s, x, y, cw, sh, h, line=t.border if rel_lum(hex_to_rgb(h)) > 0.85 else None)
             rgbv = parse_rgb(sw.get("rgb")) or hex_to_rgb(h)
-            lines = [[(sw.get("name", ""), {"bold": True, "size": 11.5 if not small else 9,
-                                             "color": t.light_text})],
-                     f"HEX  {h}", f"RGB  {', '.join(str(v) for v in rgbv)}"]
+            vals = [f"HEX  {h}", f"RGB  {', '.join(str(v) for v in rgbv)}"]
             if sw.get("cmyk"):
-                lines.append(f"CMYK  {sw['cmyk']}")
+                vals.append(f"CMYK  {sw['cmyk']}")
             if sw.get("pms"):
-                lines.append(f"PMS  {sw['pms']}")
+                vals.append(f"PMS  {sw['pms']}")
+            fs = 10 if small else 11.5
+            cap_h = (0.34 if small else 0.4) + most * (fs * 1.45 / 72) + (0.22 if any_role else 0)
+            row_h = min(5.7, (avail - gap * (rows - 1)) / rows)
+            y = top + r_ * (row_h + gap)
+            fh = row_h - cap_h - 0.12
+            rrect(s, x, y, cw, fh, h, line=t.border if rel_lum(hex_to_rgb(h)) > 0.85 else None,
+                  r=0.14)
+            lines = [[(sw.get("name", ""), {"bold": True, "size": 13 if not small else 10.5,
+                                             "color": t.light_text})]] + vals
             if sw.get("role"):
                 lines.append([(sw["role"], {"italic": True})])
-            text(s, x + 0.12, y + sh + 0.1, cw - 0.2, ch - sh - 0.15, lines,
-                 size=9 if not small else 7.5, color=t.light_muted, font=t.body_font, para_after=1)
+            text(s, x, y + fh + 0.12, cw, cap_h, lines, size=fs,
+                 color=t.light_muted, font=t.body_font, para_after=1)
             if sw.get("proposed"):
-                self.proposed_tag(s, x + 0.08, y + 0.08)
+                self.proposed_tag(s, x + 0.12, y + 0.12)
 
     def modes(self):
         b, t = self.b, self.t
@@ -1007,7 +1100,7 @@ class Deck:
             ac = color_by_ref(b, spec.get("accent")) or t.accent
             lk = color_by_ref(b, spec.get("link")) or ac
             ph = 3.15
-            rect(s, x, y, pw, ph, bg, line=bd)
+            rrect(s, x, y, pw, ph, bg, line=bd, r=0.16)
             v = None
             for vv in logo_variants(b):
                 if vv.get("id") == spec.get("logo_variant"):
@@ -1016,16 +1109,16 @@ class Deck:
             im = self.logo(v)
             if im:
                 picture(s, im, x + 0.3, y + 0.25, 1.6, 0.4, align="left")
-            text(s, x + pw - 2.3, y + 0.3, 2.0, 0.3, f"{m.upper()} MODE", size=8.5,
+            text(s, x + pw - 2.3, y + 0.3, 2.0, 0.3, f"{m.upper()} MODE", size=10,
                  color=mu, bold=True, align="right", font=t.body_font, spacing=1.5)
             cx, cy, cwid = x + 0.3, y + 0.9, pw - 0.6
-            rect(s, cx, cy, cwid, 2.0, surf, line=bd, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
-            text(s, cx + 0.25, cy + 0.2, cwid - 0.5, 0.45, "Headline in primary text", size=17,
+            rrect(s, cx, cy, cwid, 2.0, surf, line=bd, r=0.1)
+            text(s, cx + 0.25, cy + 0.2, cwid - 0.5, 0.45, "Headline in primary text", size=19,
                  color=tx, font=t.head_font)
             text(s, cx + 0.25, cy + 0.68, cwid - 0.5, 0.5,
-                 "Secondary text sits here and carries supporting detail.", size=10,
+                 "Secondary text sits here and carries supporting detail.", size=11.5,
                  color=mu, font=t.body_font)
-            btn = rect(s, cx + 0.25, cy + 1.3, 1.5, 0.42, ac, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.2)
+            btn = rrect(s, cx + 0.25, cy + 1.3, 1.5, 0.42, ac, r=0.21)
             text(s, cx + 0.25, cy + 1.3, 1.5, 0.42, "Primary action", size=9.5, bold=True,
                  color=readable_on(ac), align="center", anchor="middle", font=t.body_font)
             tb = text(s, cx + 1.95, cy + 1.36, 1.8, 0.35, "Text link", size=10, color=lk,
@@ -1039,11 +1132,11 @@ class Deck:
                 if not val:
                     continue
                 kx = x + (k % 4) * cwt
-                ky = ty + (k // 4) * 0.55
-                rect(s, kx, ky + 0.05, 0.3, 0.3, val, line=t.border, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.2)
-                text(s, kx + 0.4, ky, cwt - 0.45, 0.45,
-                     [[(key.replace("_", " ").title(), {"bold": True, "color": t.light_text, "size": 8})],
-                      val], size=7.5, color=t.light_muted, font=t.body_font, para_after=0)
+                ky = ty + (k // 4) * 0.62
+                rrect(s, kx, ky + 0.04, 0.34, 0.34, val, line=t.border, r=0.17)
+                text(s, kx + 0.44, ky, cwt - 0.5, 0.5,
+                     [[(key.replace("_", " ").title(), {"bold": True, "color": t.light_text, "size": 10})],
+                      val], size=9.5, color=t.light_muted, font=t.body_font, para_after=0)
             if spec.get("proposed"):
                 self.proposed_tag(s, x + pw - 1.25, y - 0.38)
 
@@ -1056,19 +1149,23 @@ class Deck:
                       subtitle=g(b, "colors", "ratio_intro") or
                       "Roughly how much of a layout each color should occupy.")
         total = sum(float(i.get("percent", 0)) for i in r) or 100
-        x = 0.55
-        bw = W - 1.1
+        x = 0.6
+        gap = 0.06
+        bw = W - 1.2 - gap * (len(r) - 1)
         for i in r:
             c = color_by_ref(b, i.get("color")) or "#999999"
             w = bw * float(i.get("percent", 0)) / total
-            rect(s, x, 2.4, w, 2.6, c, line=t.border if rel_lum(hex_to_rgb(c)) > 0.85 else None)
+            rrect(s, x, 2.4, w, 2.8, c, line=t.border if rel_lum(hex_to_rgb(c)) > 0.85 else None,
+                  r=0.14)
             ink = readable_on(c)
-            text(s, x + 0.2, 2.6, max(w - 0.3, 0.4), 0.8, f"{int(float(i.get('percent', 0)))}%",
-                 size=30 if w > 1.2 else 14, color=ink, font=t.head_font)
-            text(s, x + 0.02, 5.15, max(w - 0.05, 0.5), 0.9,
-                 [[(i.get("label") or i.get("color"), {"bold": True, "color": t.light_text})],
-                  i.get("use", "")], size=9, color=t.light_muted, font=t.body_font, para_after=1)
-            x += w
+            text(s, x + 0.25, 2.65, max(w - 0.3, 0.4), 0.9, f"{int(float(i.get('percent', 0)))}%",
+                 size=44 if w > 1.6 else 20, color=ink, font=t.head_font)
+            text(s, x + 0.02, 5.4, max(w - 0.1, 0.6), 1.1,
+                 [[(i.get("label") or i.get("color"), {"bold": True, "color": t.light_text,
+                                                          "size": 12})],
+                  i.get("use", "")], size=11, color=t.light_muted, font=t.body_font,
+                 para_after=1, line_spacing=1.1)
+            x += w + gap
 
     def contrast_matrix(self):
         b, t = self.b, self.t
@@ -1091,35 +1188,36 @@ class Deck:
         if len(bgs) < 2 or len(fgs) < 2:
             return
         s = self.full("Accessible Color Pairings",
-                      subtitle="WCAG 2.x contrast ratios. Body text needs 4.5:1 (AA). Large text "
-                               "and UI elements need 3:1. Calculated from the HEX values above.")
+                      subtitle="WCAG 2.x contrast ratios, calculated from the HEX values above. Body text "
+                               "needs 4.5:1 (AA); large text and UI elements need 3:1.")
         rows, cols = len(fgs) + 1, len(bgs) + 1
-        tw, th = W - 1.1, min(4.9, 0.5 * rows)
-        tbl = s.shapes.add_table(rows, cols, Inches(0.55), Inches(2.1), Inches(tw), Inches(th)).table
+        tw, th = W - 1.2, min(4.2, 0.46 * rows)
+        tbl = s.shapes.add_table(rows, cols, Inches(0.6), Inches(2.4), Inches(tw), Inches(th)).table
         tbl.columns[0].width = Inches(2.6)
         for j in range(1, cols):
             tbl.columns[j].width = Inches((tw - 2.6) / (cols - 1))
 
-        def cell(r_, c_, txt, fill, ink, bold=False, size=9):
+        def cell(r_, c_, txt, fill, ink, bold=False, size=10):
             ce = tbl.cell(r_, c_)
             ce.fill.solid()
             ce.fill.fore_color.rgb = rgb(fill)
             tf = ce.text_frame
             tf.text = ""
-            p = tf.paragraphs[0]
-            p.alignment = PP_ALIGN.CENTER if c_ else PP_ALIGN.LEFT
-            rr = p.add_run()
-            rr.text = txt
-            rr.font.size = Pt(size)
-            rr.font.bold = bold
-            rr.font.name = t.body_font
-            rr.font.color.rgb = rgb(ink)
+            for k_, part in enumerate(str(txt).split("\n")):
+                p = tf.paragraphs[0] if k_ == 0 else tf.add_paragraph()
+                p.alignment = PP_ALIGN.CENTER if c_ else PP_ALIGN.LEFT
+                rr = p.add_run()
+                rr.text = part
+                rr.font.size = Pt(size)
+                rr.font.bold = bold if k_ == 0 else False
+                rr.font.name = t.body_font
+                rr.font.color.rgb = rgb(ink)
             ce.vertical_anchor = MSO_ANCHOR.MIDDLE
         cell(0, 0, "Text  \\  Background", t.light_surface, t.light_text, True)
         for j, (h, lab) in enumerate(bgs, 1):
-            cell(0, j, f"{lab}\n{h}", h, readable_on(h), True, 8)
+            cell(0, j, f"{lab}\n{h}", h, readable_on(h), True, 9.5)
         for i, (fh, flab) in enumerate(fgs, 1):
-            cell(i, 0, f"{flab}  {fh}", t.light_surface, t.light_text, False, 8.5)
+            cell(i, 0, f"{flab}  {fh}", t.light_surface, t.light_text, False, 10)
             for j, (bh, _) in enumerate(bgs, 1):
                 r_ = contrast(fh, bh)
                 lab = wcag_label(r_)
@@ -1130,7 +1228,10 @@ class Deck:
                 tf.text = ""
                 p = tf.paragraphs[0]
                 p.alignment = PP_ALIGN.CENTER
-                for txt_, col_, sz_ in (("Aa  ", fh, 11), (f"{r_:.1f}:1 {lab}", fh if r_ >= 3 else readable_on(bh), 8.5)):
+                if r_ < 1.05:      # a color against itself carries no information
+                    ce.vertical_anchor = MSO_ANCHOR.MIDDLE
+                    continue
+                for txt_, col_, sz_ in (("Aa  ", fh, 13), (f"{r_:.1f}:1 {lab}", fh if r_ >= 3 else readable_on(bh), 10)):
                     rr = p.add_run()
                     rr.text = txt_
                     rr.font.size = Pt(sz_)
@@ -1156,34 +1257,34 @@ class Deck:
                 body.append(f"Fallback when unavailable: {f['fallback']}")
             s = self.content(f.get("name", "Typeface"), [p for p in body if p],
                              eyebrow=f.get("role", "Typeface"))
-            text(s, RX + 0.2, 0.7, 3.2, 2.6, "Aa", size=150, color=t.light_text, font=font)
-            text(s, RX + 3.6, 1.1, RW - 3.8, 2.4,
-                 ["ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz",
-                  "0123456789 !@#$%&*()?"], size=17, color=t.light_text, font=font,
-                 line_spacing=1.2, para_after=8)
+            text(s, RX, 0.7, 3.6, 3.0, "Aa", size=170, color=t.light_text, font=font,
+                 line_spacing=0.9)
+            text(s, RX + 3.8, 1.25, RW - 3.8, 2.4,
+                 ["ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "abcdefghijklm", "nopqrstuvwxyz",
+                  "0123456789 !@#$%&?"], size=20, color=t.light_text, font=font,
+                 line_spacing=1.15, para_after=4)
             weights = f.get("weights") or []
             if weights:
-                text(s, RX + 0.2, 4.0, RW, 0.3, "WEIGHTS", size=8.5, bold=True, color=t.accent,
-                     font=t.body_font, spacing=1.5)
+                rule(s, RX, 4.2, RW, t.hair)
+                self.label(s, RX, 4.4, RW, "Weights")
                 cw = RW / min(4, len(weights))
                 for i, w in enumerate(weights[:8]):
-                    x = RX + 0.2 + (i % 4) * cw
-                    y = 4.4 + (i // 4) * 0.9
+                    x = RX + (i % 4) * cw
+                    y = 4.85 + (i // 4) * 0.8
                     isbold = any(k in str(w).lower() for k in ("bold", "black", "heavy", "semi"))
-                    text(s, x, y, cw - 0.1, 0.8, [[(f"{w}", {"bold": isbold, "size": 18})],
-                                                  [(f.get("name", ""), {"size": 8, "color": t.light_muted})]],
+                    text(s, x, y, cw - 0.1, 0.7, f"{w}", size=22, bold=isbold,
                          color=t.light_text, font=font, para_after=0)
             if f.get("reserved"):
-                text(s, RX + 0.2, H - 1.05, RW, 0.4, f"Reserved: {f['reserved']}", size=9.5,
-                     color="#C0392B", font=t.body_font, italic=True)
+                text(s, RX, H - 1.35, RW, 0.4, f"Reserved: {f['reserved']}", size=12,
+                     color=t.bad, font=t.body_font)
 
         hier = T.get("hierarchy") or []
         if hier:
             s = self.full("Type Hierarchy", subtitle=T.get("hierarchy_intro"))
             n = len(hier[:9])
-            rh = min(0.62, 4.9 / n)
+            rh = min(0.66, 4.5 / n)
             for i, h in enumerate(hier[:9]):
-                y = 2.0 + i * rh
+                y = 2.2 + i * rh
                 fam = h.get("family") or t.body_font
                 fobj = next((f for f in fams if f.get("name") == fam), {})
                 font = fobj.get("fallback") if (t.fallback_fonts and fobj.get("fallback")) else fam
@@ -1191,21 +1292,21 @@ class Deck:
                     sz = float(str(h.get("size", "16")).lower().replace("px", "").replace("pt", "").split("/")[0])
                 except ValueError:
                     sz = 16
-                disp = max(9, min(34, sz * 0.75))
-                text(s, 0.55, y, 1.1, rh, h.get("level", "").upper(), size=8.5, bold=True,
-                     color=t.accent, font=t.body_font, anchor="middle", spacing=1.2)
+                disp = max(11, min(34, sz * 0.75))
+                rule(s, 0.6, y, W - 1.2, t.hair)
+                text(s, 0.6, y, 1.2, rh, h.get("level", "").upper(), size=10, bold=True,
+                     color=t.light_muted, font=t.body_font, anchor="middle", spacing=1)
                 wt = str(h.get("weight", "")).lower()
                 sample = h.get("sample") or ("The quick brown fox" if sz < 24 else "Headline sample")
-                text(s, 1.7, y, 6.0, rh, sample, size=disp, color=t.light_text, font=font,
+                text(s, 1.9, y, 5.9, rh, sample, size=disp, color=t.light_text, font=font,
                      bold=any(k in wt for k in ("bold", "semi", "black", "600", "700", "800")),
                      anchor="middle", caps=str(h.get("case", "")).lower() == "uppercase")
                 spec = "  |  ".join(str(x) for x in [fam, h.get("weight"), h.get("size"),
                                                       (f"LH {h['line_height']}" if h.get("line_height") else None),
                                                       (f"Tracking {h['tracking']}" if h.get("tracking") else None),
                                                       h.get("case")] if x)
-                text(s, 7.9, y, W - 8.45, rh, spec, size=8.5, color=t.light_muted,
+                text(s, 8.0, y, W - 8.6, rh, spec, size=10.5, color=t.light_muted,
                      font=t.body_font, anchor="middle")
-                rect(s, 0.55, y + rh - 0.02, W - 1.1, 0.01, t.border)
         if T.get("rules") and T.get("donts"):
             self.list_slide("Typography Rules", T["donts"], dos=T["rules"])
         elif T.get("rules") or T.get("donts"):
@@ -1246,11 +1347,11 @@ class Deck:
                 n = min(6, len(allimg))
                 cols = 3 if n > 4 else 2 if n > 1 else 1
                 rows = (n + cols - 1) // cols
-                cw = (RW - 0.2 * (cols - 1)) / cols
-                ch = (H - 1.6 - 0.2 * (rows - 1)) / rows
+                cw = (RW - 0.25 * (cols - 1)) / cols
+                ch = (H - 1.8 - 0.25 * (rows - 1)) / rows
                 for i, (p, ok) in enumerate(allimg[:n]):
-                    x = RX + (i % cols) * (cw + 0.2)
-                    y = 0.8 + (i // cols) * (ch + 0.2)
+                    x = RX + (i % cols) * (cw + 0.25)
+                    y = 0.9 + (i // cols) * (ch + 0.25)
                     im = Image.open(p).convert("RGB")
                     tr = cw / ch
                     if im.width / im.height > tr:
@@ -1259,14 +1360,13 @@ class Deck:
                     else:
                         nh = int(im.width / tr)
                         im = im.crop((0, (im.height - nh) // 2, im.width, (im.height - nh) // 2 + nh))
-                    picture(s, im, x, y, cw, ch)
+                    picture(s, im, x, y, cw, ch, radius=0.12)
                     if ok is not None:
                         self._x_badge(s, x + 0.08, y + 0.08, ok=ok)
             elif sec.get("dont"):
-                text(s, RX, 0.9, RW, 0.3, "AVOID", size=9, bold=True, color="#C0392B",
-                     font=t.body_font, spacing=1.5)
-                text(s, RX, 1.25, RW, 4, sec["dont"], size=12, color=t.light_text,
-                     font=t.body_font, bullets=True)
+                self.label(s, RX, 0.95, RW, "Avoid", color=t.bad)
+                text(s, RX, 1.35, RW, 4, sec["dont"], size=14, color=t.light_text,
+                     font=t.body_font, bullets=True, para_after=7)
             if sec.get("dont") and allimg:
                 pass
 
@@ -1286,19 +1386,20 @@ class Deck:
                 chunk = terms[pg:pg + 10]
                 s = self.full("Preferred Terms" + (" (continued)" if pg else ""))
                 rows = len(chunk) + 1
-                tbl = s.shapes.add_table(rows, 3, Inches(0.55), Inches(1.75), Inches(W - 1.1),
-                                         Inches(min(5.0, 0.42 * rows))).table
+                tbl = s.shapes.add_table(rows, 3, Inches(0.6), Inches(1.9), Inches(W - 1.2),
+                                         Inches(min(4.6, 0.46 * rows))).table
+                tbl.first_row = False
+                tbl.horz_banding = False
                 tbl.columns[0].width = Inches(3.2)
                 tbl.columns[1].width = Inches(3.2)
-                tbl.columns[2].width = Inches(W - 1.1 - 6.4)
-                hdr = ["Use", "Instead of", "Why / note"]
-                for j, hh in enumerate(hdr):
-                    self._cell(tbl, 0, j, hh, t.dark_bg, t.dark_text, True)
+                tbl.columns[2].width = Inches(W - 1.2 - 6.4)
+                for j, hh in enumerate(["Use", "Instead of", "Why"]):
+                    self._cell(tbl, 0, j, hh.upper(), t.light_bg, t.light_muted, True, size=10,
+                               line=t.light_text)
                 for i, tr in enumerate(chunk, 1):
-                    fill = t.light_bg if i % 2 else t.light_surface
-                    self._cell(tbl, i, 0, tr.get("use", ""), fill, t.light_text, True)
-                    self._cell(tbl, i, 1, tr.get("avoid", ""), fill, "#C0392B")
-                    self._cell(tbl, i, 2, tr.get("note", ""), fill, t.light_muted)
+                    self._cell(tbl, i, 0, tr.get("use", ""), t.light_bg, t.light_text, True)
+                    self._cell(tbl, i, 1, tr.get("avoid", ""), t.light_bg, t.bad)
+                    self._cell(tbl, i, 2, tr.get("note", ""), t.light_bg, t.light_muted)
         fmt = E.get("formatting") or []
         if fmt:
             self.list_slide("Formatting Rules", fmt,
@@ -1307,7 +1408,8 @@ class Deck:
         if E.get("donts"):
             self.list_slide("Writing: What Not To Do", E["donts"], kind="dont")
 
-    def _cell(self, tbl, r_, c_, txt, fill, ink, bold=False):
+    def _cell(self, tbl, r_, c_, txt, fill, ink, bold=False, size=13, line=None):
+        """Table cell with a hairline underneath instead of a filled grid."""
         ce = tbl.cell(r_, c_)
         ce.fill.solid()
         ce.fill.fore_color.rgb = rgb(fill)
@@ -1315,11 +1417,27 @@ class Deck:
         tf.text = ""
         rr = tf.paragraphs[0].add_run()
         rr.text = str(txt)
-        rr.font.size = Pt(10)
+        rr.font.size = Pt(size)
         rr.font.bold = bold
         rr.font.name = self.t.body_font
         rr.font.color.rgb = rgb(ink)
         ce.vertical_anchor = MSO_ANCHOR.MIDDLE
+        ce.margin_left = Inches(0.02)
+        tcPr = ce._tc.get_or_add_tcPr()
+        for edge in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+            for el in tcPr.findall(qn(edge)):
+                tcPr.remove(el)
+        for edge in ("a:lnL", "a:lnR", "a:lnT"):
+            ln = etree.SubElement(tcPr, qn(edge), w="0")
+            etree.SubElement(ln, qn("a:noFill"))
+        ln = etree.SubElement(tcPr, qn("a:lnB"), w="9525")
+        sf = etree.SubElement(ln, qn("a:solidFill"))
+        etree.SubElement(sf, qn("a:srgbClr"), val=norm_hex(line or self.t.hair)[1:])
+        # border elements must precede the fill element in tcPr
+        fills = [el for el in tcPr if el.tag in (qn("a:solidFill"), qn("a:noFill"))]
+        for el in fills:
+            tcPr.remove(el)
+            tcPr.append(el)
 
     # ---------- governance ----------
     def governance(self):
@@ -1344,36 +1462,37 @@ class Deck:
         half = (len(items) + 1) // 2
         for col, chunk in enumerate((items[:half], items[half:])):
             for i, it in enumerate(chunk[:7]):
-                x = 0.55 + col * 6.2
-                y = 2.0 + i * 0.68
-                rect(s, x, y + 0.05, 0.3, 0.3, None, line=t.accent,
-                     shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.15)
-                text(s, x + 0.5, y, 5.5, 0.6, it, size=12, color=t.light_text,
-                     font=t.body_font)
+                x = 0.6 + col * 6.2
+                y = 2.1 + i * 0.64
+                rrect(s, x, y + 0.04, 0.3, 0.3, None, line=t.accent, r=0.09)
+                text(s, x + 0.52, y, 5.4, 0.6, it, size=14, color=t.light_text,
+                     font=t.body_font, line_spacing=1.1)
         contacts = G.get("contacts") or []
         hist = G.get("version_history") or []
         if contacts or G.get("asset_location") or hist:
             s = self.content("Questions and Resources",
                              G.get("approval_note") or "When in doubt, ask before you publish.")
-            y = 0.9
+            y = 0.95
             for c in contacts[:4]:
-                rect(s, RX, y, RW, 0.85, "#FFFFFF" if not is_dark(t.light_bg) else t.light_bg, line=t.border)
-                text(s, RX + 0.3, y + 0.12, RW - 0.6, 0.65,
-                     [[(c.get("role", ""), {"bold": True, "color": t.accent, "size": 9})],
-                      "  |  ".join(x for x in [c.get("name"), c.get("email")] if x)],
-                     size=12, color=t.light_text, font=t.body_font, para_after=2)
-                y += 1.0
+                rule(s, RX, y, RW, t.hair)
+                text(s, RX, y + 0.15, RW, 0.8,
+                     [[(c.get("role", ""), {"bold": True, "color": t.light_muted, "size": 11})],
+                      [("   ".join(x for x in [c.get("name"), c.get("email")] if x), {"size": 17})]],
+                     size=15, color=t.light_text, font=t.body_font, para_after=3)
+                y += 1.05
             if G.get("asset_location"):
-                text(s, RX, y + 0.1, RW, 0.6,
-                     [[("Logo files, fonts, and templates: ", {"bold": True}), (G["asset_location"], {})]],
-                     size=11, color=t.light_text, font=t.body_font)
-                y += 0.8
+                rule(s, RX, y, RW, t.hair)
+                text(s, RX, y + 0.15, RW, 0.9,
+                     [[("Logo files, fonts, and templates", {"bold": True, "color": t.light_muted, "size": 11})],
+                      [(G["asset_location"], {"size": 15})]],
+                     size=15, color=t.light_text, font=t.body_font, para_after=3)
+                y += 1.15
             if hist:
-                text(s, RX, y + 0.1, RW, 0.3, "VERSION HISTORY", size=8.5, bold=True,
-                     color=t.accent, font=t.body_font, spacing=1.5)
-                text(s, RX, y + 0.45, RW, 2, [f"{h.get('version')}  {h.get('date')}  {h.get('notes', '')}"
+                rule(s, RX, y, RW, t.hair)
+                self.label(s, RX, y + 0.17, RW, "Version history")
+                text(s, RX, y + 0.55, RW, 2, [f"{h.get('version')}   {h.get('date')}   {h.get('notes', '')}"
                                               for h in hist[:5]],
-                     size=10, color=t.light_muted, font=t.body_font)
+                     size=12, color=t.light_muted, font=t.body_font, para_after=4)
 
     # ==================================================================
     def build(self, out):
